@@ -834,7 +834,7 @@
   async function buildMixer(rows, duration){
     const audios = []; let ready = 0; const withPrev = rows.map((f, i) => ({f, i})).filter(x => x.f.preview);
     for(const {f, i} of withPrev){
-      const a = new Audio(); a.preload = 'auto'; a.crossOrigin = 'anonymous'; a.src = await fileUrl(f.preview); a.volume = 1; a.muted = !!f.original;
+      const a = new Audio(); a.preload = 'auto'; a.src = await fileUrl(f.preview);   // sem crossOrigin: o proxy do Colab exige os cookies da sessão a.volume = 1; a.muted = !!f.original;
       audios.push({a, i, muted: !!f.original, solo:false, vol:1});
     }
     const play = $('#mxPlay'), seek = $('#mxSeek'), cur = $('#mxCur'), state = $('#mxState');
@@ -866,6 +866,7 @@
     seek.addEventListener('input', () => { seeking = true; const d = master && (master.duration || dur); if(d) cur.textContent = fmtDur(seek.value/1000*d); seek.style.setProperty('--p', (seek.value/10)+'%'); });
     seek.addEventListener('change', () => { const d = master && (master.duration || dur); if(d){ const t = seek.value/1000*d; audios.forEach(x => x.a.currentTime = t); } seeking = false; });
     applyGains();
+    setTimeout(() => { if(state.textContent === 'carregando…'){ state.textContent = 'demorando… clique em ▶'; } }, 40000);
     return { pause: doPause, destroy(){ doPause(); audios.forEach(x => { x.a.src = ''; x.a.load(); }); } };
   }
   root.addEventListener('click', e => { const b = e.target.closest('[data-dl]'); if(b && !b.disabled) downloadRel(b.dataset.dl, b); });
