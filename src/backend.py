@@ -38,11 +38,11 @@ STEM_COLOR = {'Vocals': '#f472b6', 'Instrumental': '#38bdf8', 'Drums': '#fb923c'
               'Guitar': '#facc15', 'Piano': '#34d399', 'Other': '#94a3b8'}
 MODES = {
     '2stem': {'label': 'Voz + Playback', 'model': 'model_bs_roformer_ep_317_sdr_12.9755.ckpt',
-              'stems': ['Vocals', 'Instrumental'], 'factor': 0.45, 'base': 25},
+              'stems': ['Vocals', 'Instrumental'], 'factor': 1.2, 'base': 30},
     '4stem': {'label': 'Banda (4 faixas)', 'model': 'htdemucs_ft.yaml',
-              'stems': ['Vocals', 'Drums', 'Bass', 'Other'], 'factor': 0.9, 'base': 30},
+              'stems': ['Vocals', 'Drums', 'Bass', 'Other'], 'factor': 1.2, 'base': 40},
     '6stem': {'label': 'Completo (6 faixas)', 'model': 'htdemucs_6s.yaml',
-              'stems': ['Vocals', 'Drums', 'Bass', 'Guitar', 'Piano', 'Other'], 'factor': 0.4, 'base': 25},
+              'stems': ['Vocals', 'Drums', 'Bass', 'Guitar', 'Piano', 'Other'], 'factor': 0.5, 'base': 30},
 }
 OUT_FORMATS = {'wav': 'WAV', 'flac': 'FLAC', 'mp3': 'MP3'}
 
@@ -403,6 +403,7 @@ def _stage(job, key, label, status='running', percent=None):
                 s['ended'] = time.time()
         elif s['status'] == 'running' and status == 'running':
             s['status'] = 'done'; s['percent'] = 100; s['ended'] = time.time()
+    if job.get('stage') != key: job['detail'] = ''
     job['stage'] = key; job['stage_label'] = label
     if percent is not None: job['percent'] = percent
     if status == 'running': job['status'] = 'running'
@@ -524,6 +525,8 @@ def _run_separator(job, wav, mode, out_format, out_dir, names):
         cmd += ['--output_bitrate', '320k']
     if cfg['model'].endswith('.yaml'):
         cmd += ['--demucs_shifts', '1']
+    if _gpu_info()['available']:
+        cmd += ['--use_autocast']   # precisão mista na GPU: bem mais rápido, qualidade praticamente igual
     env = dict(os.environ, PYTHONUNBUFFERED='1', PYTHONIOENCODING='utf-8', TQDM_MININTERVAL='0.5')
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='ignore', env=env, bufsize=0)
     job['proc'] = proc

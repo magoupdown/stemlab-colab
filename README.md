@@ -24,7 +24,7 @@ Notebook do Google Colab com **interface de página web** que usa inteligência 
 3. Rode a célula **2️⃣**: o aplicativo aparece abaixo. Cole o link ou envie um arquivo, escolha o modo e clique em **Separar faixas**.
 4. Na primeira separação de cada modo, o modelo de IA é baixado (uma vez por sessão). O modelo de voz já começa a baixar em segundo plano assim que o app abre.
 
-Tempo típico na GPU T4 para uma música de 4 minutos: cerca de 2 minutos no modo Voz + Playback.
+Tempo típico na GPU T4 para uma música de 4 minutos: cerca de 4 a 7 minutos no modo Voz + Playback (o BS-Roformer é pesado, mas é o mais preciso).
 
 ## Limites e observações
 
