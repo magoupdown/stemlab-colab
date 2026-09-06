@@ -501,6 +501,20 @@ def _sep_cmd():
 def _model_ready(model):
     return any(f.startswith(os.path.splitext(model)[0]) for f in os.listdir(MODELS_DIR)) if os.path.isdir(MODELS_DIR) else False
 
+def _iter_output(stream):
+    """Le a saida do processo separando por quebra de linha e tambem por retorno de carro (barras do tqdm)."""
+    buf = ''
+    while True:
+        ch = stream.read(1)
+        if not ch:
+            if buf: yield buf
+            return
+        if ch == chr(13) or ch == chr(10):
+            if buf.strip(): yield buf
+            buf = ''
+        else:
+            buf += ch
+
 def _run_separator(job, wav, mode, out_format, out_dir, names):
     cfg = MODES[mode]
     cmd = _sep_cmd() + [wav, '--model_filename', cfg['model'],
@@ -510,44 +524,36 @@ def _run_separator(job, wav, mode, out_format, out_dir, names):
         cmd += ['--output_bitrate', '320k']
     if cfg['model'].endswith('.yaml'):
         cmd += ['--demucs_shifts', '1']
-    env = dict(os.environ, PYTHONUNBUFFERED='1', TQDM_MININTERVAL='0.5')
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='ignore', env=env, bufsize=1)
+    env = dict(os.environ, PYTHONUNBUFFERED='1', PYTHONIOENCODING='utf-8', TQDM_MININTERVAL='0.5')
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='ignore', env=env, bufsize=0)
     job['proc'] = proc
     tail, err_hint = [], None
     started = time.time(); phase_started = None
     est = cfg['base'] + (job.get('duration') or 180) * cfg['factor']
-    downloading = not _model_ready(cfg['model'])
-    if downloading:
-        _stage(job, 'model', 'Baixando o modelo de IA (uma vez por sessão)…', 'running', 0)
+    onde = 'na GPU' if (_gpu_info()['available']) else 'no processador'
+    if _model_ready(cfg['model']):
+        _stage(job, 'model', f'Carregando o modelo {onde}…', 'running', 0)
     else:
-        _stage(job, 'model', 'Carregando o modelo na GPU…', 'running', 0)
+        _stage(job, 'model', 'Baixando o modelo de IA (uma vez por sessão)…', 'running', 0)
     try:
-        for line in proc.stdout:
+        for line in _iter_output(proc.stdout):
             if job.get('cancel'):
                 proc.kill(); raise yt_dlp.utils.DownloadCancelled('Cancelado pelo usuário')
-            line = line.rstrip('\n')
-            if not line.strip(): continue
-            tail.append(line); tail[:] = tail[-40:]
+            tail.append(line[:300]); tail[:] = tail[-40:]
             low = line.lower()
-            m = re.search(r'(\d{1,3})%\|', line)  # barras do tqdm (download do modelo / demucs)
-            if 'download' in low and job['stage'] == 'model':
-                job['detail'] = 'Baixando modelo…' + (f' {m.group(1)}%' if m else '')
-                if m: job['percent'] = int(m.group(1))
-            elif ('loading model' in low or 'load_model' in low) and job['stage'] == 'model':
-                job['detail'] = 'Carregando pesos na GPU…'
-            elif 'starting separation' in low or 'separating' in low or 'processing' in low or 'inference' in low:
-                if job['stage'] != 'separate':
-                    _stage(job, 'separate', 'Separando as faixas na GPU…', 'running', 0); phase_started = time.time()
-                    job['detail'] = ''
-                if m: job['percent'] = max(job['percent'], min(99, int(m.group(1))))
-            elif job['stage'] == 'separate' and m:
-                job['percent'] = max(job['percent'], min(99, int(m.group(1))))
-            elif 'saving' in low or 'writing' in low or 'exporting' in low:
-                if job['stage'] == 'separate':
-                    job['detail'] = 'Gravando arquivos…'
-            if 'error' in low and 'errorlevel' not in low:
+            m = re.search(r'(\d{1,3})%\|', line)  # barras do tqdm (download do modelo / separação)
+            if 'starting separation' in low:
+                _stage(job, 'separate', f'Separando as faixas {onde}…', 'running', 0); phase_started = time.time(); job['detail'] = ''
+            elif 'loading model' in low and job['stage'] == 'model':
+                job['detail'] = 'Carregando pesos…'
+            elif ' saving ' in low or 'writing output' in low:
+                if job['stage'] == 'separate': job['detail'] = 'Gravando arquivos…'
+            elif m and job['stage'] == 'model':
+                job['percent'] = int(m.group(1)); job['detail'] = f'Baixando modelo… {m.group(1)}%'
+            elif m and job['stage'] == 'separate':
+                job['percent'] = max(job['percent'], min(99, int(m.group(1)))); job['detail'] = f'{m.group(1)}%'
+            if ('error' in low or 'traceback' in low) and 'errorlevel' not in low:
                 err_hint = line
-            # estimativa suave quando o processo não informa porcentagem
             if job['stage'] == 'separate' and phase_started and not m:
                 job['percent'] = max(job['percent'], min(95, (time.time() - phase_started) / max(est, 1) * 100))
         proc.wait()
@@ -559,6 +565,7 @@ def _run_separator(job, wav, mode, out_format, out_dir, names):
         raise yt_dlp.utils.DownloadCancelled('Cancelado pelo usuário')
     if proc.returncode != 0:
         msg = err_hint or (tail[-1] if tail else f'o separador retornou código {proc.returncode}')
+        job['log_tail'] = tail[-15:]
         raise RuntimeError(_friendly_error(msg))
     job['sep_seconds'] = round(time.time() - started)
 
@@ -602,17 +609,18 @@ def _run_separate_job(job):
         raise RuntimeError(f'Este áudio tem {_hms(job["duration"])}. O limite é {MAX_DURATION // 60} minutos para não estourar a memória da GPU.')
     mode, fmt = job['mode'], job['out_format']
     base = _safe_name(src['title'])
-    names = {stem: f'{base} - {STEM_PT[stem]}' for stem in MODES[mode]['stems']}
+    names = {stem: f'stemlab_{stem.lower()}' for stem in MODES[mode]['stems']}   # nomes internos simples
     (_run_separator_mock if MOCK else _run_separator)(job, wav, mode, fmt, out_dir, names)
     _stage(job, 'export', 'Preparando prévias e arquivos…', 'running', 0)
     files = []
     stems = MODES[mode]['stems']
     for i, stem in enumerate(stems):
         _check_cancel(job)
-        cand = [f for f in os.listdir(out_dir) if f.startswith(names[stem]) and not f.endswith('.preview.mp3')]
+        cand = [f for f in os.listdir(out_dir) if f.lower().startswith(names[stem]) and not f.endswith('.preview.mp3')]
         if not cand:
-            raise RuntimeError(f'A faixa "{STEM_PT[stem]}" não foi gerada pelo separador.')
-        path = os.path.join(out_dir, cand[0])
+            raise RuntimeError(f'A faixa "{STEM_PT[stem]}" não foi gerada pelo separador.' + (' Detalhes: ' + ' | '.join(job.get('log_tail') or [])[-300:] if job.get('log_tail') else ''))
+        path = os.path.join(out_dir, f'{base} - {STEM_PT[stem]}{os.path.splitext(cand[0])[1]}')
+        os.replace(os.path.join(out_dir, cand[0]), path)
         prev = os.path.join(out_dir, f'{stem.lower()}.preview.mp3')
         _make_preview(path, prev)
         size = os.path.getsize(path)

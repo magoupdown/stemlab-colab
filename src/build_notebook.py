@@ -8,7 +8,7 @@ backend = open(os.path.join(HERE, 'backend.py'), encoding='utf-8').read()
 app_html = open(os.path.join(HERE, 'app.html'), encoding='utf-8').read()
 assert '"""' not in app_html, 'app.html não pode conter aspas triplas'
 
-INTRO_MD = r"""# 🎚 StemLab — separe voz e instrumentos de qualquer música
+INTRO_MD = r"""# 🎧 StemLab — separador de voz e instrumentos
 
 Cole um **link do YouTube** (ou envie um arquivo do computador) e a inteligência artificial separa a música em **voz, playback, bateria, baixo, guitarra e piano**. Ouça o resultado em um **mixer** dentro da página e baixe cada faixa em WAV, FLAC ou MP3. Também dá para **baixar só o áudio** do YouTube em vários formatos e qualidades.
 
@@ -87,7 +87,7 @@ else:
 # ---------- 4. Dependências ----------
 _box('📦 Instalando yt-dlp, o separador de faixas (audio-separator) e o runtime JavaScript… 1 a 3 min')
 _t0 = time.time()
-_r = subprocess.run([sys.executable, '-m', 'pip', 'install', '-q', '-U', 'yt-dlp[default]', 'audio-separator'],
+_r = subprocess.run([sys.executable, '-m', 'pip', 'install', '-q', '-U', 'yt-dlp[default]', 'audio-separator[cpu]', 'audioread'],
                     capture_output=True, text=True)
 if _r.returncode != 0:
     _box('Falha ao instalar as dependências. Copie a mensagem abaixo e envie para suporte.', 'err')
