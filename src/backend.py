@@ -590,7 +590,7 @@ def _run_separator_mock(job, wav, mode, out_format, out_dir, names):
 
 def _make_preview(src_path, dst_path):
     subprocess.run(['ffmpeg', '-y', '-hide_banner', '-loglevel', 'error', '-i', src_path, '-vn', '-ac', '2', '-ar', '44100',
-                    '-c:a', 'libmp3lame', '-b:a', '128k', dst_path], capture_output=True)
+                    '-c:a', 'libmp3lame', '-b:a', '96k', dst_path], capture_output=True)
     return os.path.exists(dst_path)
 
 def _copy_to_drive(job, path, sub):
@@ -803,6 +803,18 @@ def cb_colab_download(rel):
     except Exception as e:
         return JSON({'ok': False, 'error': str(e)})
 
+def cb_preview_b64(rel):
+    """Plano B do mixer: entrega a prévia em base64 pela ponte do Colab quando o proxy de portas não responde."""
+    try:
+        path = os.path.normpath(os.path.join(OUT_DIR, rel))
+        if not path.startswith(os.path.normpath(OUT_DIR)) or not os.path.exists(path):
+            raise FileNotFoundError('Prévia não encontrada.')
+        with open(path, 'rb') as f:
+            data = base64.b64encode(f.read()).decode('ascii')
+        return JSON({'ok': True, 'b64': data, 'mime': 'audio/mpeg'})
+    except Exception as e:
+        return JSON({'ok': False, 'error': str(e)})
+
 def cb_cleanup():
     try:
         for j in list(STATE['jobs'].values()):
@@ -902,5 +914,6 @@ for _n, _f in {
     'analyze': cb_analyze, 'upload_start': cb_upload_start, 'upload_chunk': cb_upload_chunk, 'upload_finish': cb_upload_finish,
     'start_job': cb_start_job, 'job_status': cb_job_status, 'jobs_list': cb_jobs_list, 'cancel_job': cb_cancel_job,
     'zip_job': cb_zip_job, 'colab_download': cb_colab_download, 'cleanup': cb_cleanup, 'models_status': cb_models_status,
+    'preview_b64': cb_preview_b64,
 }.items():
     _register(_n, _f)

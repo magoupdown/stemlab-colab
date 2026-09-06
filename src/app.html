@@ -217,13 +217,15 @@
 
   /* ---- processamento ---- */
   #stemlab .proc { display:grid; grid-template-columns: 200px 1fr; gap:26px; align-items:center; }
-  #stemlab .ring { width:200px; height:200px; position:relative; display:grid; place-items:center; margin:0 auto; }
+  #stemlab .ringbox { display:flex; flex-direction:column; align-items:center; gap:12px; }
+  #stemlab .ringbox .stage { font-size:13px; font-weight:700; color:var(--muted); text-align:center; max-width:220px; line-height:1.35; }
+  #stemlab .ring { width:200px; height:200px; position:relative; display:grid; place-items:center; margin:0 auto; flex:none; }
   #stemlab .ring svg { position:absolute; inset:0; transform: rotate(-90deg); }
   #stemlab .ring circle { fill:none; stroke-width:10; stroke-linecap:round; }
   #stemlab .ring .track { stroke: var(--line-2); }
   #stemlab .ring .prog { stroke: url(#slGrad); transition: stroke-dashoffset .6s ease; filter: drop-shadow(0 0 8px rgba(139,92,246,.6)); }
-  #stemlab .ring .pct { font-family:'Sora',sans-serif; font-size:40px; font-weight:800; line-height:1; }
-  #stemlab .ring .pct small { display:block; font-size:12px; color:var(--muted); font-weight:600; margin-top:6px; font-family:'Inter',sans-serif; }
+  #stemlab .ring .pct { font-family:'Sora',sans-serif; font-size:40px; font-weight:800; line-height:1; text-align:center; position:relative; }
+  #stemlab .ring .pct small { display:block; font-size:11px; color:var(--muted-2); font-weight:600; margin-top:6px; font-family:'Inter',sans-serif; letter-spacing:.04em; text-transform:uppercase; }
   #stemlab .ring.busy .prog { animation: slRingBusy 1.6s linear infinite; }
   @keyframes slRingBusy { from { stroke-dashoffset: 530; transform: rotate(-90deg);} to { stroke-dashoffset: 530; transform: rotate(270deg);} }
   #stemlab .timeline { display:grid; gap:10px; }
@@ -766,7 +768,7 @@
   function renderProc(j){
     const card = $('#procCard');
     if(!j){
-      card.innerHTML = `<div class="proc"><div class="ring busy"><svg viewBox="0 0 200 200"><circle class="track" cx="100" cy="100" r="84"/><circle class="prog" cx="100" cy="100" r="84" stroke-dasharray="${RING_C}" stroke-dashoffset="${RING_C*0.8}"/></svg><div class="pct">…<small>preparando</small></div></div><div><h2>Preparando…</h2><p class="sub">Aguarde, a tarefa está sendo iniciada.</p></div></div>`;
+      card.innerHTML = `<div class="proc"><div class="ringbox"><div class="ring busy"><svg viewBox="0 0 200 200"><circle class="track" cx="100" cy="100" r="84"/><circle class="prog" cx="100" cy="100" r="84" stroke-dasharray="${RING_C}" stroke-dashoffset="${RING_C*0.8}"/></svg><div class="pct">…</div></div><div class="stage">Preparando</div></div><div><h2>Preparando…</h2><p class="sub">Aguarde, a tarefa está sendo iniciada.</p></div></div>`;
       $('#procActions').innerHTML = ''; resize(); return;
     }
     const pct = Math.max(0, Math.min(100, j.percent || 0));
@@ -780,7 +782,8 @@
     }).join('');
     const title = j.status === 'queued' ? `Na fila${j.ahead ? ` · ${j.ahead} na frente` : ''}` : (j.kind === 'separate' ? 'Separando as faixas' : 'Baixando o áudio');
     const est = j.kind === 'separate' && j.status === 'running' ? `Tempo estimado total: ≈ ${fmtEta(estSecondsFor(j))}` : '';
-    card.innerHTML = `<div class="proc"><div class="ring ${indeterminate || j.status==='queued' ? 'busy' : ''}"><svg viewBox="0 0 200 200"><circle class="track" cx="100" cy="100" r="84"/><circle class="prog" cx="100" cy="100" r="84" stroke-dasharray="${RING_C}" stroke-dashoffset="${indeterminate ? RING_C*0.8 : RING_C*(1-pct/100)}"/></svg><div class="pct">${indeterminate ? '…' : Math.round(pct)+'%'}<small>${esc(j.stage_label||'')}</small></div></div>
+    const stageShort = {fetch:'obtendo áudio', model:'modelo de IA', separate:'separando', export:'exportando'}[j.stage] || (j.status === 'queued' ? 'na fila' : '');
+    card.innerHTML = `<div class="proc"><div class="ringbox"><div class="ring ${indeterminate || j.status==='queued' ? 'busy' : ''}"><svg viewBox="0 0 200 200"><circle class="track" cx="100" cy="100" r="84"/><circle class="prog" cx="100" cy="100" r="84" stroke-dasharray="${RING_C}" stroke-dashoffset="${indeterminate ? RING_C*0.8 : RING_C*(1-pct/100)}"/></svg><div class="pct">${indeterminate ? '…' : Math.round(pct)+'%'}<small>${esc(stageShort)}</small></div></div><div class="stage">${esc(j.stage_label||'')}</div></div>
       <div><h2>${title}</h2><p class="sub" style="margin-bottom:12px"><b>${esc(j.title||'')}</b> · ${esc(j.label||'')}${j.elapsed ? ` · ${fmtEta(j.elapsed)} decorridos` : ''}</p>${est ? `<p class="small muted" style="margin:0 0 12px">${est}. Você pode preparar outra música enquanto espera: a fila continua rodando.</p>` : ''}<div class="timeline">${stages}</div>${j.warning ? `<div class="note warn">${esc(j.warning)}</div>` : ''}</div></div>`;
     $('#procActions').innerHTML = `<button class="btn ghost" id="anotherBtn">＋ Preparar outra música</button><div class="right"><button class="btn danger" id="cancelBtn">✕ Cancelar</button></div>`;
     $('#cancelBtn').addEventListener('click', async e => { if(!await confirmModal({title:'Cancelar esta tarefa?', text:'O processamento será interrompido e os arquivos parciais descartados.', ok:'Cancelar tarefa', cancel:'Continuar', danger:true})) return; busy(e.target, true, 'Cancelando'); await api('cancel_job', j.id); });
@@ -834,9 +837,23 @@
   async function buildMixer(rows, duration){
     const audios = []; let ready = 0; const withPrev = rows.map((f, i) => ({f, i})).filter(x => x.f.preview);
     for(const {f, i} of withPrev){
-      const a = new Audio(); a.preload = 'auto'; a.src = await fileUrl(f.preview);   // sem crossOrigin: o proxy do Colab exige os cookies da sessão a.volume = 1; a.muted = !!f.original;
-      audios.push({a, i, muted: !!f.original, solo:false, vol:1});
+      const a = new Audio(); a.preload = 'auto'; a.volume = 1; a.muted = !!f.original;
+      audios.push({a, i, muted: !!f.original, solo:false, vol:1, rel: f.preview, viaB64:false});
     }
+    // Carrega cada prévia: primeiro pelo proxy de portas do Colab; se não responder em 8 s (ou der erro),
+    // busca o áudio em base64 pela ponte do Colab (mais lento, porém sempre funciona).
+    async function loadViaB64(x){
+      if(x.viaB64) return; x.viaB64 = true;
+      try{ const r = await api('preview_b64', x.rel); if(!r.ok) throw new Error(r.error); x.a.src = `data:${r.mime};base64,${r.b64}`; x.a.load(); }
+      catch(e){ x.failed = true; }
+    }
+    audios.forEach(x => {
+      let settled = false;
+      x.a.addEventListener('canplay', () => { settled = true; }, {once:true});
+      x.a.addEventListener('error', () => { if(!settled && !x.viaB64) loadViaB64(x); }, {once:true});
+      setTimeout(() => { if(!settled && !x.viaB64) loadViaB64(x); }, 8000);
+      fileUrl(x.rel).then(u => { if(!x.viaB64){ x.a.src = u; x.a.load(); } }).catch(() => loadViaB64(x));
+    });
     const play = $('#mxPlay'), seek = $('#mxSeek'), cur = $('#mxCur'), state = $('#mxState');
     const master = audios[0] ? audios[0].a : null;
     let playing = false, seeking = false, dur = duration || 0;
@@ -854,19 +871,19 @@
     });
     list.addEventListener('input', e => { const v = e.target.closest('[data-vol]'); if(!v) return; const x = audios.find(x => x.i == v.dataset.vol); if(x){ x.vol = v.value/100; v.style.setProperty('--p', v.value+'%'); applyGains(); } });
     function sync(){ if(!master) return; audios.forEach(x => { if(x.a !== master && Math.abs(x.a.currentTime - master.currentTime) > 0.12) x.a.currentTime = master.currentTime; }); }
-    async function doPlay(){ if(!master) return; sync(); await Promise.all(audios.map(x => x.a.play().catch(()=>{}))); playing = true; play.textContent = '❚❚'; state.textContent = 'tocando'; applyGains(); }
+    async function doPlay(){ if(!master) return; if(ready < audios.length) toast('As prévias ainda estão carregando. Aguarde o selo "pronto" ao lado do player.', 'info', 4000); sync(); await Promise.all(audios.map(x => x.a.play().catch(()=>{}))); playing = true; play.textContent = '❚❚'; state.textContent = 'tocando'; applyGains(); }
     function doPause(){ audios.forEach(x => x.a.pause()); playing = false; play.textContent = '▶'; state.textContent = 'pausado'; applyGains(); }
     play.addEventListener('click', () => playing ? doPause() : doPlay());
     if(master){
       master.addEventListener('timeupdate', () => { if(seeking) return; const d = master.duration || dur; if(d) { seek.value = Math.round(master.currentTime / d * 1000); seek.style.setProperty('--p', (master.currentTime/d*100)+'%'); } cur.textContent = fmtDur(master.currentTime); if(playing && (master.currentTime|0) % 3 === 0) sync(); });
       master.addEventListener('ended', () => { doPause(); audios.forEach(x => x.a.currentTime = 0); });
       master.addEventListener('loadedmetadata', () => { dur = master.duration || dur; $('#mxDur').textContent = fmtDur(dur); });
-      audios.forEach(x => { x.a.addEventListener('canplaythrough', () => { ready++; if(ready >= audios.length) state.textContent = 'pronto'; }, {once:true}); x.a.addEventListener('error', () => { state.textContent = 'prévia indisponível'; state.className = 'badge warn'; }); });
+      audios.forEach(x => { x.a.addEventListener('canplay', () => { ready++; if(ready >= audios.length){ state.textContent = 'pronto'; state.className = 'badge ok'; } else state.textContent = `carregando ${ready}/${audios.length}…`; }, {once:true}); });
+      setTimeout(() => { if(ready < audios.length && state.textContent.startsWith('carregando')){ state.textContent = 'carregando pela ponte do Colab…'; } }, 9000);
     }
     seek.addEventListener('input', () => { seeking = true; const d = master && (master.duration || dur); if(d) cur.textContent = fmtDur(seek.value/1000*d); seek.style.setProperty('--p', (seek.value/10)+'%'); });
     seek.addEventListener('change', () => { const d = master && (master.duration || dur); if(d){ const t = seek.value/1000*d; audios.forEach(x => x.a.currentTime = t); } seeking = false; });
     applyGains();
-    setTimeout(() => { if(state.textContent === 'carregando…'){ state.textContent = 'demorando… clique em ▶'; } }, 40000);
     return { pause: doPause, destroy(){ doPause(); audios.forEach(x => { x.a.src = ''; x.a.load(); }); } };
   }
   root.addEventListener('click', e => { const b = e.target.closest('[data-dl]'); if(b && !b.disabled) downloadRel(b.dataset.dl, b); });
