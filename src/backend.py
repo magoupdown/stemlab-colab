@@ -215,7 +215,7 @@ def _output_path(rel, preview=False):
         raise ValueError('Prévia inválida ou grande demais para a ponte do Colab.')
     return path
 
-def _run_process(job, cmd, timeout=1800):
+def _run_process(job, cmd, timeout=1800, progress_file=None):
     """Processo com leitura contínua, prazo e cancelamento, inclusive sem logs."""
     import tempfile
     _check_cancel(job)
@@ -228,6 +228,11 @@ def _run_process(job, cmd, timeout=1800):
                 _check_cancel(job)
                 if time.monotonic() - started > timeout:
                     raise TimeoutError('O processamento ultrapassou o tempo limite.')
+                if progress_file and job.get('duration'):
+                    try:
+                        with open(progress_file) as f: values = re.findall(r'out_time_us=(\d+)', f.read())
+                        if values: job['percent'] = max(job.get('percent', 0), min(99, int(values[-1]) / 1000000 / job['duration'] * 100))
+                    except OSError: pass
                 time.sleep(0.1)
             _check_cancel(job)
             if proc.returncode:
@@ -751,12 +756,88 @@ def _run_download_job(job):
                      'drive_path': _copy_to_drive(job, path, 'Downloads')}]
     _stage(job, 'export', 'Concluído', 'done', 100)
 
+
+def cb_mix_job(parent_id, tracks, out_format='wav', save_drive=False):
+    """Cria uma mixagem independente sem alterar as faixas da separação."""
+    try:
+        import math
+        parent = STATE['jobs'].get(parent_id)
+        if not parent or parent['status'] != 'done' or parent['kind'] != 'separate':
+            raise ValueError('Conclua uma separação antes de renderizar a mixagem.')
+        if out_format not in OUT_FORMATS:
+            raise ValueError('Escolha WAV, FLAC ou MP3.')
+        if not isinstance(tracks, list) or not 1 <= len(tracks) <= len(parent['files']):
+            raise ValueError('Selecione ao menos uma faixa audível para renderizar.')
+        available = {f['stem']: f for f in parent['files']}
+        selected, seen = [], set()
+        for item in tracks:
+            stem = item.get('stem'); gain = float(item.get('gain', 1))
+            if stem not in available or stem in seen or not math.isfinite(gain) or not 0 < gain <= 1:
+                raise ValueError('Seleção de faixas ou volume inválido.')
+            seen.add(stem)
+            f = available[stem]
+            _output_path(f['rel'])
+            selected.append({'stem': stem, 'gain': gain, 'rel': f['rel'], 'label': f['label']})
+        job_id = uuid.uuid4().hex[:10]
+        label = ' + '.join(f['label'] for f in selected)
+        job = {'id': job_id, 'kind': 'mix', 'parent_id': parent_id, 'source_id': parent['source_id'],
+               'title': parent['title'], 'thumbnail': parent.get('thumbnail'), 'duration': parent.get('duration') or 0,
+               'status': 'queued', 'cancel': False, 'created': time.time(), 'percent': 0, 'detail': '',
+               'stage': None, 'stage_label': 'Na fila', 'files': [], 'error': None, 'warning': None,
+               'save_drive': bool(save_drive), 'out_format': out_format, 'mix_tracks': selected,
+               'label': f'Mixagem: {label} · {out_format.upper()}',
+               'stages': [{'key': 'export', 'label': 'Renderizar mixagem', 'status': 'pending', 'percent': 0}]}
+        STATE['jobs'][job_id] = job
+        JOB_QUEUE.put(job_id); _ensure_worker()
+        return JSON({'ok': True, 'job_id': job_id})
+    except Exception as e:
+        return JSON({'ok': False, 'error': _friendly_error(str(e))})
+
+def _run_mix_job(job):
+    out_dir = os.path.join(OUT_DIR, job['id']); os.makedirs(out_dir, exist_ok=True)
+    fmt = job['out_format']
+    filename = _safe_name(job['title'], 65) + ' - Mixagem.' + fmt
+    path = os.path.join(out_dir, filename)
+    cmd = ['ffmpeg', '-y', '-hide_banner', '-loglevel', 'error']
+    filters, labels = [], []
+    for i, track in enumerate(job['mix_tracks']):
+        cmd += ['-i', _output_path(track['rel'])]
+        filters.append(f'[{i}:a]aresample=44100,aformat=channel_layouts=stereo,asetpts=PTS-STARTPTS,volume={track["gain"]:.8f}[s{i}]')
+        labels.append(f'[s{i}]')
+    # Soma sem redução automática de ganho; limitador atua só nos picos e compensa latência.
+    filters.append(''.join(labels) + f'amix=inputs={len(labels)}:duration=longest:dropout_transition=0:normalize=0,alimiter=limit=0.98:level=false:latency=true[mix]')
+    codec = {'wav': ['-c:a', 'pcm_s24le'], 'flac': ['-c:a', 'flac'],
+             'mp3': ['-c:a', 'libmp3lame', '-b:a', '320k']}[fmt]
+    progress = os.path.join(out_dir, 'render.progress')
+    cmd += ['-filter_complex', ';'.join(filters), '-map', '[mix]', '-vn', '-ar', '44100'] + codec
+    cmd += ['-progress', progress, '-nostats', path]
+    _stage(job, 'export', 'Renderizando mixagem…', 'running', 0)
+    job['detail'] = ' + '.join(t['label'] for t in job['mix_tracks'])
+    try:
+        _run_process(job, cmd, progress_file=progress)
+        if not os.path.isfile(path) or os.path.getsize(path) == 0:
+            raise RuntimeError('A mixagem não gerou um arquivo de áudio válido.')
+        _check_cancel(job)
+        drive = _copy_to_drive(job, path, 'Mixagens')
+        size = os.path.getsize(path)
+        job['files'] = [{'stem': 'Mix', 'label': 'Mixagem', 'icon': '🎛', 'color': '#34d399',
+                         'file': filename, 'rel': f"{job['id']}/{filename}", 'size': size,
+                         'size_label': _fmt_size(size), 'preview': None, 'drive_path': drive}]
+        _stage(job, 'export', 'Mixagem concluída', 'done', 100)
+    except BaseException:
+        if os.path.exists(path): os.remove(path)
+        raise
+    finally:
+        if os.path.exists(progress): os.remove(progress)
+
 def _run_job(job_id):
     job = STATE['jobs'][job_id]
     job['started'] = time.time()
     try:
         if job['kind'] == 'separate':
             _run_separate_job(job)
+        elif job['kind'] == 'mix':
+            _run_mix_job(job)
         else:
             _run_download_job(job)
         _check_cancel(job)
@@ -1030,6 +1111,7 @@ for _n, _f in {
     'analyze': cb_analyze, 'upload_start': cb_upload_start, 'upload_chunk': cb_upload_chunk, 'upload_finish': cb_upload_finish,
     'start_job': cb_start_job, 'job_status': cb_job_status, 'jobs_list': cb_jobs_list, 'cancel_job': cb_cancel_job,
     'zip_job': cb_zip_job, 'colab_download': cb_colab_download, 'cleanup': cb_cleanup, 'models_status': cb_models_status,
-    'preview_b64': cb_preview_b64,
+    'preview_b64': cb_preview_b64, 'mix_job': cb_mix_job,
 }.items():
     _register(_n, _f)
+

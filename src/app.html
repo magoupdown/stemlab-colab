@@ -781,7 +781,7 @@
               const tm = s.status === 'running' && s.started ? fmtEta(Date.now()/1000 - s.started) : '';
               return `<div class="tl ${cls}">${icon}<div><div class="lab">${esc(s.label)}</div><div class="det">${det}</div></div><div class="tm">${tm}</div></div>`;
             }).join('');
-            const title = j.status === 'done' ? 'Concluído' : j.status === 'queued' ? `Na fila${j.ahead ? ` · ${j.ahead} na frente` : ''}` : (j.kind === 'separate' ? 'Separando as faixas' : 'Baixando o áudio');
+            const title = j.status === 'done' ? 'Concluído' : j.status === 'queued' ? `Na fila${j.ahead ? ` · ${j.ahead} na frente` : ''}` : (j.kind === 'mix' ? 'Renderizando mixagem' : j.kind === 'separate' ? 'Separando as faixas' : 'Baixando o áudio');
             const est = j.kind === 'separate' && j.status === 'running' ? `Tempo estimado total: ≈ ${fmtEta(estSecondsFor(j))}` : '';
             const stageShort = {fetch:'obtendo áudio', model:'modelo de IA', separate:'separando', export:'exportando'}[j.stage] || (j.status === 'queued' ? 'na fila' : '');
             card.innerHTML = `<div class="proc"><div class="ringbox"><div class="ring ${indeterminate || j.status==='queued' ? 'busy' : ''}"><svg viewBox="0 0 200 200" style="animation-delay:${-(performance.now()%1600)}ms"><circle class="track" cx="100" cy="100" r="84"/><circle class="prog" cx="100" cy="100" r="84" stroke-dasharray="${RING_C}" stroke-dashoffset="${indeterminate ? RING_C*0.8 : RING_C*(1-pct/100)}"/></svg><div class="pct">${indeterminate ? '…' : Math.round(pct)+'%'}<small>${esc(stageShort)}</small></div></div><div class="stage">${esc(j.stage_label||'')}</div></div>
@@ -824,24 +824,38 @@
             }
             const files = j.files || [];
             const sep = j.kind === 'separate';
-            card.innerHTML = `<div class="result-head"><div class="big">🎉</div><div><h2 style="margin:0">${sep ? 'Faixas prontas!' : 'Áudio pronto!'}</h2><p class="sub" style="margin:4px 0 0"><b>${esc(j.title||'')}</b> · ${esc(j.label||'')}${j.elapsed ? ` · levou ${fmtEta(j.elapsed)}` : ''}${j.save_drive && files.some(f=>f.drive_path) ? ' · cópias salvas no Drive' : ''}</p></div></div>
+            card.innerHTML = `<div class="result-head"><div class="big">🎉</div><div><h2 style="margin:0">${sep ? 'Faixas prontas!' : (j.kind === 'mix' ? 'Mixagem pronta!' : 'Áudio pronto!')}</h2><p class="sub" style="margin:4px 0 0"><b>${esc(j.title||'')}</b> · ${esc(j.label||'')}${j.elapsed ? ` · levou ${fmtEta(j.elapsed)}` : ''}${j.save_drive && files.some(f=>f.drive_path) ? ' · cópias salvas no Drive' : ''}</p></div></div>
               ${j.warning ? `<div class="note warn">${esc(j.warning)}</div>` : ''}
-              ${sep ? `<div class="note info" style="margin-top:16px">Ouça o resultado no <b>mixer</b>: silencie (M) ou isole (S) cada faixa e ajuste o volume. Depois clique em <b>Baixar</b> em cada faixa ou baixe tudo em um ZIP.</div>
+              ${sep ? `<div class="note info" style="margin-top:16px">Ouça o resultado no <b>mixer</b>: silencie (M) ou isole (S) cada faixa e ajuste o volume. Baixe as faixas separadas ou use <b>Renderizar mixagem</b> para juntar as faixas audíveis em um único áudio. A faixa Original serve apenas para comparação e nunca entra na mixagem.</div>
               <div class="transport" style="margin-top:14px"><button class="playbtn" id="mxPlay" title="Tocar / pausar">▶</button><div><input type="range" class="seek" id="mxSeek" min="0" max="1000" value="0"><div class="row" style="justify-content:space-between;margin-top:4px"><span class="time" id="mxCur">0:00</span><span class="time" id="mxDur">${fmtDur(j.duration)}</span></div></div><span class="badge" id="mxState">carregando…</span></div>` : ''}
-              <div class="stems" id="stemList"></div>`;
+              <div class="stems" id="stemList"></div>
+              ${sep ? `<div class="note info"><b>Mixagem personalizada</b><p id="mixSummary" aria-live="polite"></p><div class="row" style="flex-wrap:wrap;gap:12px"><label>Formato <select id="mixFormat"><option value="wav">WAV</option><option value="flac">FLAC</option><option value="mp3">MP3 · 320 kbps</option></select></label>${S.cfg.drive ? `<label><input type="checkbox" id="mixDrive" ${j.save_drive ? 'checked' : ''}> Salvar também no Drive</label>` : ''}<button class="btn primary" id="mixBtn">🎛 Renderizar mixagem</button></div><p class="small">Respeita M, Solo e volumes. O limitador protege a soma contra picos excessivos.</p></div>` : ''}`;
             const list = $('#stemList');
             const rows = files.map(f => ({...f}));
             if(sep && j.original_preview) rows.push({stem:'Original', label:'Original', icon:'💿', color:'#e2e8f0', preview:j.original_preview, rel:null, original:true});
-            list.innerHTML = rows.map((f, i) => `<div class="stem ${f.original?'muted':''}" style="--c:${f.color}" data-i="${i}"><div class="ico">${f.icon}</div><div><div class="nm">${esc(f.label)}${f.original ? '<span class="badge">para comparar</span>' : `<span class="badge">${esc(f.size_label||'')}</span>`}${f.drive_path ? '<span class="badge ok">Drive</span>' : ''}</div><div class="fi">${esc(f.file || 'música original (prévia)')}</div></div><div class="ctl">${sep && f.preview ? `<div class="meter"><i></i><i></i><i></i><i></i></div><button class="mbtn m ${f.original?'on':''}" data-mute="${i}" title="Silenciar">M</button><button class="mbtn s" data-solo="${i}" title="Solo (ouvir só esta)">S</button><input type="range" class="vol" data-vol="${i}" min="0" max="100" value="100">` : ''}${f.rel ? `<button class="btn sm primary" data-dl="${esc(f.rel)}">⬇ Baixar</button>` : ''}</div></div>`).join('');
-            $('#resultActions').innerHTML = `<button class="btn ghost" id="newBtn">↺ Nova música</button><div class="right">${sep && S.source && S.source.id === j.source_id ? '<button class="btn" id="againBtn">🔀 Separar de outro jeito</button>' : ''}${files.length > 1 ? '<button class="btn" id="zipBtn">🗜 Baixar tudo (.zip)</button>' : ''}</div>`;
+            list.innerHTML = rows.map((f, i) => `<div class="stem ${f.original?'muted':''}" style="--c:${f.color}" data-i="${i}"><div class="ico">${f.icon}</div><div><div class="nm">${esc(f.label)}${f.original ? '<span class="badge">para comparar</span>' : `<span class="badge">${esc(f.size_label||'')}</span>`}${f.drive_path ? '<span class="badge ok">Drive</span>' : ''}</div><div class="fi">${esc(f.file || 'música original (prévia)')}</div></div><div class="ctl">${sep ? `<div class="meter"><i></i><i></i><i></i><i></i></div><button class="mbtn m ${f.original?'on':''}" data-mute="${i}" title="Silenciar">M</button><button class="mbtn s" data-solo="${i}" title="Solo (ouvir só esta)">S</button><input type="range" class="vol" data-vol="${i}" min="0" max="100" value="100">` : ''}${f.rel ? `<button class="btn sm primary" data-dl="${esc(f.rel)}">⬇ Baixar</button>` : ''}</div></div>`).join('');
+            $('#resultActions').innerHTML = `<button class="btn ghost" id="newBtn">↺ Nova música</button><div class="right">${sep && S.source && S.source.id === j.source_id ? '<button class="btn" id="againBtn">🔀 Separar de outro jeito</button>' : ''}${j.kind === 'mix' ? '<button class="btn" id="backStemsBtn">🎛 Voltar às faixas</button>' : ''}${files.length > 1 ? '<button class="btn" id="zipBtn">🗜 Baixar tudo (.zip)</button>' : ''}</div>`;
             $('#newBtn').addEventListener('click', resetToStart);
             const ab = $('#againBtn'); if(ab) ab.addEventListener('click', () => { S.action = 'separate'; renderOptions(); goto(3); });
             const zb = $('#zipBtn'); if(zb) zb.addEventListener('click', async () => { busy(zb, true, 'Compactando…'); const r = await api('zip_job', j.id); busy(zb, false); if(!r.ok) return toast(r.error, 'err'); toast(`ZIP pronto (${r.size_label}).`, 'ok'); downloadRel(r.rel, zb); });
             confetti(card); resize();
             if(sep) S.mixer = await buildMixer(rows, j.duration);
+            const backStems = $('#backStemsBtn'); if(backStems) backStems.addEventListener('click', () => viewJob(j.parent_id));
+            const mixBtn = $('#mixBtn'); if(mixBtn) mixBtn.addEventListener('click', async () => {
+              const tracks = S.mixer ? S.mixer.selection() : [];
+              if(!tracks.length) return toast('Deixe ao menos uma faixa audível, com volume acima de zero.', 'warn');
+              busy(mixBtn, true, 'Preparando mixagem…');
+              try {
+                const r = await api('mix_job', j.id, tracks, $('#mixFormat').value, !!$('#mixDrive')?.checked);
+                if(!r.ok) throw new Error(r.error);
+                if(S.mixer){ S.mixer.destroy(); S.mixer = null; }
+                S.jobId = r.job_id; renderProc(null); goto(4); poll(); startQueuePolling();
+              } catch(e){ toast(e.message, 'err'); }
+              finally { busy(mixBtn, false); }
+            });
           }
           async function buildMixer(rows, duration){
-            const audios = []; let ready = 0, destroyed = false; const withPrev = rows.map((f, i) => ({f, i})).filter(x => x.f.preview);
+            const audios = []; let ready = 0, destroyed = false; const withPrev = rows.map((f, i) => ({f, i})).filter(x => x.f.preview || !x.f.original);
             for(const {f, i} of withPrev){
               const a = new Audio(); a.preload = 'auto'; a.volume = 1; a.muted = !!f.original;
               audios.push({a, i, muted: !!f.original, solo:false, vol:1, rel: f.preview, viaB64:false});
@@ -854,6 +868,7 @@
               catch(e){ x.failed = true; }
             }
             audios.forEach(x => {
+              if(!x.rel){ x.failed = true; return; }
               let settled = false;
               x.a.addEventListener('canplay', () => { settled = true; }, {once:true});
               x.a.addEventListener('error', () => { if(!settled && !x.viaB64) loadViaB64(x); }, {once:true});
@@ -863,11 +878,19 @@
             const play = $('#mxPlay'), seek = $('#mxSeek'), cur = $('#mxCur'), state = $('#mxState');
             const master = audios[0] ? audios[0].a : null;
             let playing = false, seeking = false, dur = duration || 0;
+            function selection(){
+              const anySolo = audios.some(x => x.solo);
+              return audios.filter(x => !rows[x.i].original && (anySolo ? x.solo : !x.muted) && x.vol > 0)
+                .map(x => ({stem: rows[x.i].stem, gain: x.vol}));
+            }
             function applyGains(){
               const anySolo = audios.some(x => x.solo);
               audios.forEach(x => { const audible = anySolo ? x.solo : !x.muted; x.a.muted = !audible; x.a.volume = x.vol; const row = list.querySelector(`.stem[data-i="${x.i}"]`); if(row){ row.classList.toggle('muted', !audible); row.classList.toggle('playing', playing && audible); } });
               list.querySelectorAll('[data-mute]').forEach(b => b.classList.toggle('on', audios.find(x => x.i == b.dataset.mute)?.muted));
               list.querySelectorAll('[data-solo]').forEach(b => b.classList.toggle('on', audios.find(x => x.i == b.dataset.solo)?.solo));
+              const selected = selection();
+              const summary = $('#mixSummary'); if(summary) summary.textContent = selected.length ? 'Incluir: ' + selected.map(t => (rows.find(r => r.stem === t.stem)?.label || t.stem) + ' (' + Math.round(t.gain * 100) + '%)').join(', ') : 'Nenhuma faixa selecionada. Desative M ou Solo no Original e aumente o volume de uma faixa.';
+              const button = $('#mixBtn'); if(button) button.disabled = !selected.length;
             }
             const list = $('#stemList');
             list.addEventListener('click', e => {
@@ -890,7 +913,7 @@
             seek.addEventListener('input', () => { seeking = true; const d = master && (master.duration || dur); if(d) cur.textContent = fmtDur(seek.value/1000*d); seek.style.setProperty('--p', (seek.value/10)+'%'); });
             seek.addEventListener('change', () => { const d = master && (master.duration || dur); if(d){ const t = seek.value/1000*d; audios.forEach(x => x.a.currentTime = t); } seeking = false; });
             applyGains();
-            return { pause: doPause, destroy(){ destroyed = true; doPause(); audios.forEach(x => { x.a.src = ''; x.a.load(); }); } };
+            return { selection, pause: doPause, destroy(){ destroyed = true; doPause(); audios.forEach(x => { x.a.src = ''; x.a.load(); }); } };
           }
           root.addEventListener('click', e => { const b = e.target.closest('[data-dl]'); if(b && !b.disabled) downloadRel(b.dataset.dl, b); });
           function resetToStart(){ if(S.mixer){ S.mixer.destroy(); S.mixer = null; } S.jobId = null; S.source = null; S.action = null; S.playerOn = false; $('#urlInput').value = ''; S.maxStep = 1; stopWatchModels(); goto(1); $$('.step').forEach(s=>s.classList.remove('done')); }
@@ -932,3 +955,4 @@
           bootstrap().catch(e => { toast('Erro ao iniciar: ' + e.message, 'err', 8000); showFatal('Falha ao chamar o Python (stemlab.bootstrap). Verifique se a célula 2 terminou sem erro.\n' + (e.stack || e.message)); });
         })();
         </script>
+

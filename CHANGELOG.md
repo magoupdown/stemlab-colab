@@ -64,3 +64,13 @@ Nos fluxos de exportação, a separação foi **simulada explicitamente**, usand
 
 - [Audio Separator: instalação e opções da linha de comando](https://github.com/nomadkaraoke/python-audio-separator). Confirma os parâmetros usados pelo separador e a distinção entre ambientes de execução.
 - [yt-dlp: configuração de JavaScript externo](https://github.com/yt-dlp/yt-dlp/wiki/EJS). Documenta a necessidade de runtime compatível e o pacote de scripts incluído em yt-dlp[default].
+
+
+## Mixagem personalizada de faixas
+
+- Novo botão **Renderizar mixagem**, com WAV, FLAC e MP3 320 kbps.
+- Qualquer combinação das faixas separadas, respeitando M, Solo e volumes; a faixa Original nunca entra no arquivo.
+- Resumo das faixas incluídas antes de renderizar; rejeição de seleção vazia ou volumes inválidos.
+- Renderização com FFmpeg a partir das faixas exportadas, soma sem normalização automática e limitador de picos com compensação de latência.
+- Tarefa na fila, progresso de codificação, cancelamento, cópia opcional no Drive e retorno às faixas separadas.
+- Verificação local: 15 casos de backend com arquivos reais e testes de seleção do mixer. Sinais em frequências distintas confirmam exclusão da faixa silenciada e proporção de volumes nos três formatos. WAV/FLAC também foram comparados amostra a amostra com a soma esperada. A inferência de IA e a interface dentro do Colab não foram executadas neste teste.
