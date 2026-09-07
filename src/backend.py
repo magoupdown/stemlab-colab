@@ -804,8 +804,9 @@ def _run_mix_job(job):
         cmd += ['-i', _output_path(track['rel'])]
         filters.append(f'[{i}:a]aresample=44100,aformat=channel_layouts=stereo,asetpts=PTS-STARTPTS,volume={track["gain"]:.8f}[s{i}]')
         labels.append(f'[s{i}]')
-    # Soma sem redução automática de ganho; limitador atua só nos picos e compensa latência.
-    filters.append(''.join(labels) + f'amix=inputs={len(labels)}:duration=longest:dropout_transition=0:normalize=0,alimiter=limit=0.98:level=false:latency=true[mix]')
+    # Soma sem redução automática de ganho. Em 44100 Hz, attack=5 atrasa 219 amostras.
+    # Padding e corte compensam o atraso sem a opção latency, ausente em FFmpeg antigos.
+    filters.append(''.join(labels) + f'amix=inputs={len(labels)}:duration=longest:dropout_transition=0:normalize=0,apad=pad_len=219,alimiter=limit=0.98:level=false:attack=5,atrim=start_sample=219,asetpts=PTS-STARTPTS[mix]')
     codec = {'wav': ['-c:a', 'pcm_s24le'], 'flac': ['-c:a', 'flac'],
              'mp3': ['-c:a', 'libmp3lame', '-b:a', '320k']}[fmt]
     progress = os.path.join(out_dir, 'render.progress')
