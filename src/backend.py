@@ -24,11 +24,14 @@ MOCK          = bool(os.environ.get('STEMLAB_MOCK'))  # modo de teste local sem 
 for _d in (WORK_DIR, OUT_DIR, MODELS_DIR):
     os.makedirs(_d, exist_ok=True)
 
-STATE = {
+STATE = globals().get('_STEMLAB_STATE') or {
     'jobs': {}, 'sources': {}, 'uploads': {},
     'user': globals().get('USER_EMAIL') or 'Conta Google conectada',
     'js_runtime': None, 'gpu': None, 'prefetch': {},
 }
+
+_STEMLAB_STATE = STATE
+MODEL_LOCK = STATE.setdefault('model_lock', threading.Lock())
 
 # ---------- modos de separação ----------
 STEM_PT = {'Vocals': 'Voz', 'Instrumental': 'Playback', 'Drums': 'Bateria', 'Bass': 'Baixo',
@@ -111,7 +114,7 @@ class _SilentLogger:
 
 def _base_opts():
     o = {
-        'quiet': True, 'no_warnings': True, 'noprogress': True, 'nocheckcertificate': True,
+        'quiet': True, 'no_warnings': True, 'noprogress': True, 'nocheckcertificate': False,
         'extractor_retries': 3, 'retries': 5, 'fragment_retries': 5, 'socket_timeout': 30,
         'geo_bypass': True, 'logger': _SilentLogger(),
     }
@@ -151,11 +154,13 @@ def _parse_video_id(url):
     if not re.match(r'^https?://', u, re.I):
         u = 'https://' + u
     p = urllib.parse.urlparse(u)
-    host = p.netloc.lower().replace('www.', '').replace('m.', '').replace('music.', '')
+    host = (p.hostname or '').lower()
+    if p.username or p.password or p.port not in (None, 80, 443):
+        raise ValueError('unsupported url: endereço inválido.')
     qs = urllib.parse.parse_qs(p.query)
     if host == 'youtu.be':
         vid = p.path.strip('/').split('/')[0] or None
-    elif 'youtube' in host:
+    elif host in ('youtube.com', 'www.youtube.com', 'm.youtube.com', 'music.youtube.com'):
         vid = (qs.get('v') or [None])[0]
         if not vid:
             m = re.match(r'^/(shorts|live|embed|v)/([A-Za-z0-9_-]{11})', p.path)
@@ -166,6 +171,8 @@ def _parse_video_id(url):
         if (qs.get('list') or [None])[0]:
             raise ValueError('Este link é de uma playlist. O StemLab trabalha com uma música por vez: abra o vídeo e copie o link dele.')
         raise ValueError('unsupported url: não encontrei um vídeo nesse link.')
+    if not re.fullmatch(r'[A-Za-z0-9_-]{11}', vid):
+        raise ValueError('unsupported url: identificador de vídeo inválido.')
     return vid
 
 def _ffprobe_duration(path):
@@ -175,6 +182,61 @@ def _ffprobe_duration(path):
         return float(out) if out else 0.0
     except Exception:
         return 0.0
+
+def _cookie_domain_ok(domain):
+    domain = domain.lower().lstrip('.')
+    return any(domain == base or domain.endswith('.' + base) for base in ('youtube.com', 'google.com'))
+
+def _validate_cookie_content(content):
+    rows = ['# Netscape HTTP Cookie File']
+    for line in content.splitlines():
+        raw = line[len('#HttpOnly_'):] if line.startswith('#HttpOnly_') else line
+        if not raw.strip() or raw.startswith('#'):
+            continue
+        parts = raw.split('\t')
+        if len(parts) != 7 or parts[1] not in ('TRUE', 'FALSE') or parts[3] not in ('TRUE', 'FALSE'):
+            raise ValueError('Registro Netscape inválido: confira a exportação dos cookies.')
+        if not parts[4].isdigit() or not parts[5]:
+            raise ValueError('Nome ou validade de cookie inválido.')
+        if _cookie_domain_ok(parts[0]):
+            rows.append(line)
+    if len(rows) == 1:
+        raise ValueError('Não há cookies do YouTube ou Google neste arquivo.')
+    return '\n'.join(rows) + '\n'
+
+def _output_path(rel, preview=False):
+    if not isinstance(rel, str) or not rel or os.path.isabs(rel):
+        raise ValueError('Caminho de arquivo inválido.')
+    root = os.path.realpath(OUT_DIR)
+    path = os.path.realpath(os.path.join(root, rel))
+    if os.path.commonpath((root, path)) != root or not os.path.isfile(path):
+        raise FileNotFoundError('Arquivo não encontrado nesta sessão.')
+    if preview and (not path.endswith('.preview.mp3') or os.path.getsize(path) > 32 * 1024 * 1024):
+        raise ValueError('Prévia inválida ou grande demais para a ponte do Colab.')
+    return path
+
+def _run_process(job, cmd, timeout=1800):
+    """Processo com leitura contínua, prazo e cancelamento, inclusive sem logs."""
+    import tempfile
+    _check_cancel(job)
+    with tempfile.TemporaryFile(mode='w+b') as log:
+        proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT)
+        job['proc'] = proc
+        started = time.monotonic()
+        try:
+            while proc.poll() is None:
+                _check_cancel(job)
+                if time.monotonic() - started > timeout:
+                    raise TimeoutError('O processamento ultrapassou o tempo limite.')
+                time.sleep(0.1)
+            _check_cancel(job)
+            if proc.returncode:
+                log.seek(max(0, log.tell() - 3000))
+                raise RuntimeError(log.read().decode('utf-8', errors='replace')[-3000:])
+        finally:
+            if proc.poll() is None: proc.kill()
+            proc.wait()
+            job['proc'] = None
 
 # ---------- cookies ----------
 def _json_cookies_to_netscape(items):
@@ -201,6 +263,8 @@ def _header_cookies_to_netscape(header):
     return _json_cookies_to_netscape(items)
 
 def _normalize_cookies(text):
+    if not isinstance(text, str) or len(text.encode('utf-8')) > 2 * 1024 * 1024:
+        raise ValueError('Cookies devem ser texto com até 2 MB.')
     t = text.strip().lstrip('﻿')
     if not t:
         raise ValueError('Arquivo de cookies vazio.')
@@ -223,9 +287,10 @@ def _cookie_summary():
     names, total = set(), 0
     with open(COOKIES_PATH, encoding='utf-8', errors='ignore') as f:
         for line in f:
+            if line.startswith('#HttpOnly_'): line = line[len('#HttpOnly_'):]
             if line.startswith('#') or not line.strip(): continue
             parts = line.rstrip('\n').split('\t')
-            if len(parts) >= 7 and ('youtube.com' in parts[0] or 'google.com' in parts[0]):
+            if len(parts) >= 7 and _cookie_domain_ok(parts[0]):
                 total += 1
                 names.add(parts[5])
     logged = bool(names & {'SID', '__Secure-3PSID', 'SAPISID', '__Secure-3PAPISID', 'LOGIN_INFO'})
@@ -235,9 +300,10 @@ def _cookie_summary():
 
 def cb_save_cookies(text, persist_drive=True):
     try:
-        content = _normalize_cookies(text)
+        content = _validate_cookie_content(_normalize_cookies(text))
         with open(COOKIES_PATH, 'w', encoding='utf-8') as f:
             f.write(content)
+        os.chmod(COOKIES_PATH, 0o600)
         saved_drive = False
         if persist_drive and _drive_on():
             os.makedirs(DRIVE_ROOT, exist_ok=True)
@@ -318,7 +384,7 @@ def cb_analyze(url):
             info = ydl.extract_info(f'https://www.youtube.com/watch?v={vid}', download=False)
         if not info:
             raise RuntimeError('video unavailable')
-        if info.get('is_live'):
+        if info.get('is_live') or info.get('live_status') in ('is_live', 'is_upcoming'):
             raise RuntimeError('is a live')
         dur = info.get('duration') or 0
         src_id = uuid.uuid4().hex[:10]
@@ -358,7 +424,11 @@ def cb_upload_chunk(up_id, data_b64):
     try:
         up = STATE['uploads'].get(up_id)
         if not up: raise ValueError('Envio não encontrado. Tente novamente.')
-        chunk = base64.b64decode(data_b64)
+        if len(data_b64) > 4 * 1024 * 1024:
+            raise ValueError('Bloco de upload muito grande.')
+        chunk = base64.b64decode(data_b64, validate=True)
+        if up['received'] + len(chunk) > min(up['size'], MAX_UPLOAD_MB * 1024 * 1024):
+            raise ValueError('O bloco excede o tamanho declarado do arquivo.')
         with open(up['path'], 'ab') as f:
             f.write(chunk)
         up['received'] += len(chunk)
@@ -373,6 +443,7 @@ def cb_upload_finish(up_id):
         up = STATE['uploads'].pop(up_id, None)
         if not up: raise ValueError('Envio não encontrado. Tente novamente.')
         if up['received'] != up['size']:
+            os.remove(up['path'])
             raise ValueError(f'Envio incompleto ({_fmt_size(up["received"])} de {_fmt_size(up["size"])}). Tente novamente.')
         dur = _ffprobe_duration(up['path'])
         if dur <= 0:
@@ -390,7 +461,7 @@ def cb_upload_finish(up_id):
         return JSON({'ok': False, 'error': str(e)})
 
 # ---------- tarefas ----------
-JOB_QUEUE = queue.Queue()
+JOB_QUEUE = STATE.setdefault('queue', queue.Queue())
 
 def _stage(job, key, label, status='running', percent=None):
     for s in job['stages']:
@@ -437,7 +508,7 @@ def _download_youtube_audio(job, src, out_dir, audio_format='best', audio_qualit
     opts.update({
         'outtmpl': os.path.join(out_dir, f'{tag}_%(id)s.%(ext)s' if tag == 'src' else '%(title).120B [%(id)s].%(ext)s'),
         'noplaylist': True, 'overwrites': True, 'windowsfilenames': True, 'concurrent_fragment_downloads': 4,
-        'format': 'ba/b', 'progress_hooks': [lambda d: _yt_progress(d, job)], 'postprocessors': [], 'ignoreerrors': True,
+        'format': 'ba/b', 'progress_hooks': [lambda d: _yt_progress(d, job)], 'postprocessors': [], 'ignoreerrors': False,
         'postprocessor_hooks': [lambda d: _pp_hook(d, job)],
     })
     if audio_format != 'best':
@@ -484,10 +555,8 @@ def _ensure_source_wav(job, src):
     _stage(job, 'fetch', 'Preparando o áudio…', 'running', 100)
     job['detail'] = 'Convertendo para WAV 44.1 kHz'
     wav = os.path.join(src_dir, 'source.wav')
-    r = subprocess.run(['ffmpeg', '-y', '-hide_banner', '-loglevel', 'error', '-i', raw, '-vn', '-ac', '2', '-ar', '44100',
-                        '-c:a', 'pcm_s16le', wav], capture_output=True, text=True)
-    if r.returncode != 0 or not os.path.exists(wav):
-        raise RuntimeError('Falha ao converter o áudio: ' + (r.stderr.strip().splitlines() or ['ffmpeg'])[-1])
+    _run_process(job, ['ffmpeg', '-y', '-hide_banner', '-loglevel', 'error', '-i', raw,
+                       '-vn', '-ac', '2', '-ar', '44100', '-c:a', 'pcm_s24le', wav])
     src['wav'] = wav
     if not src.get('duration'):
         src['duration'] = _ffprobe_duration(wav); src['duration_str'] = _hms(src['duration'])
@@ -500,21 +569,34 @@ def _sep_cmd():
     return [exe] if exe else [sys.executable, '-m', 'audio_separator.utils.cli']
 
 def _model_ready(model):
-    return any(f.startswith(os.path.splitext(model)[0]) for f in os.listdir(MODELS_DIR)) if os.path.isdir(MODELS_DIR) else False
+    return model in STATE.setdefault('ready_models', set())
 
-def _iter_output(stream):
-    """Le a saida do processo separando por quebra de linha e tambem por retorno de carro (barras do tqdm)."""
-    buf = ''
+def _iter_output(stream, job, proc, timeout=7200):
+    lines = queue.Queue()
+    def read():
+        buf = ''
+        try:
+            while True:
+                ch = stream.read(1)
+                if not ch: break
+                if ch in ('\r', '\n'):
+                    if buf.strip(): lines.put(buf)
+                    buf = ''
+                else:
+                    buf = (buf + ch)[-4000:]
+            if buf: lines.put(buf)
+        finally:
+            lines.put(None)
+    threading.Thread(target=read, daemon=True).start()
+    started = time.monotonic()
     while True:
-        ch = stream.read(1)
-        if not ch:
-            if buf: yield buf
-            return
-        if ch == chr(13) or ch == chr(10):
-            if buf.strip(): yield buf
-            buf = ''
-        else:
-            buf += ch
+        _check_cancel(job)
+        if time.monotonic() - started > timeout:
+            raise TimeoutError('A separação excedeu duas horas. Tente um áudio mais curto.')
+        try: line = lines.get(timeout=0.2)
+        except queue.Empty: continue
+        if line is None: return
+        yield line
 
 def _run_separator(job, wav, mode, out_format, out_dir, names):
     cfg = MODES[mode]
@@ -539,7 +621,7 @@ def _run_separator(job, wav, mode, out_format, out_dir, names):
     else:
         _stage(job, 'model', 'Baixando o modelo de IA (uma vez por sessão)…', 'running', 0)
     try:
-        for line in _iter_output(proc.stdout):
+        for line in _iter_output(proc.stdout, job, proc):
             if job.get('cancel'):
                 proc.kill(); raise yt_dlp.utils.DownloadCancelled('Cancelado pelo usuário')
             tail.append(line[:300]); tail[:] = tail[-40:]
@@ -561,6 +643,8 @@ def _run_separator(job, wav, mode, out_format, out_dir, names):
                 job['percent'] = max(job['percent'], min(95, (time.time() - phase_started) / max(est, 1) * 100))
         proc.wait()
     finally:
+        if proc.poll() is None: proc.kill()
+        proc.wait()
         job['proc'] = None
         try: proc.stdout.close()
         except Exception: pass
@@ -588,15 +672,22 @@ def _run_separator_mock(job, wav, mode, out_format, out_dir, names):
         job['percent'] = (i + 1) / len(stems) * 100; time.sleep(0.6)
     job['sep_seconds'] = 3
 
-def _make_preview(src_path, dst_path):
-    subprocess.run(['ffmpeg', '-y', '-hide_banner', '-loglevel', 'error', '-i', src_path, '-vn', '-ac', '2', '-ar', '44100',
-                    '-c:a', 'libmp3lame', '-b:a', '96k', dst_path], capture_output=True)
-    return os.path.exists(dst_path)
+def _make_preview(src_path, dst_path, job):
+    try:
+        _run_process(job, ['ffmpeg', '-y', '-hide_banner', '-loglevel', 'error', '-i', src_path,
+                          '-vn', '-ac', '2', '-ar', '44100', '-c:a', 'libmp3lame', '-b:a', '96k', dst_path])
+        return os.path.isfile(dst_path) and os.path.getsize(dst_path) > 0
+    except yt_dlp.utils.DownloadCancelled:
+        raise
+    except Exception:
+        if os.path.exists(dst_path): os.remove(dst_path)
+        job['warning'] = 'Os arquivos foram gerados, mas uma prévia não pôde ser criada. Baixe as faixas para ouvir.'
+        return False
 
 def _copy_to_drive(job, path, sub):
     if not (job.get('save_drive') and _drive_on()):
         return None
-    d = os.path.join(DRIVE_ROOT, sub); os.makedirs(d, exist_ok=True)
+    d = os.path.join(DRIVE_ROOT, sub, job['id']); os.makedirs(d, exist_ok=True)
     dst = os.path.join(d, os.path.basename(path))
     shutil.copy2(path, dst)
     return dst.replace(DRIVE_MYDRIVE, 'Meu Drive')
@@ -613,7 +704,15 @@ def _run_separate_job(job):
     mode, fmt = job['mode'], job['out_format']
     base = _safe_name(src['title'])
     names = {stem: f'stemlab_{stem.lower()}' for stem in MODES[mode]['stems']}   # nomes internos simples
-    (_run_separator_mock if MOCK else _run_separator)(job, wav, mode, fmt, out_dir, names)
+    _stage(job, 'model', 'Aguardando disponibilidade do modelo…', 'running', 0)
+    while not MODEL_LOCK.acquire(timeout=0.2):
+        _check_cancel(job)
+    try:
+        _check_cancel(job)
+        (_run_separator_mock if MOCK else _run_separator)(job, wav, mode, fmt, out_dir, names)
+        if not MOCK: STATE.setdefault('ready_models', set()).add(MODES[mode]['model'])
+    finally:
+        MODEL_LOCK.release()
     _stage(job, 'export', 'Preparando prévias e arquivos…', 'running', 0)
     files = []
     stems = MODES[mode]['stems']
@@ -625,7 +724,7 @@ def _run_separate_job(job):
         path = os.path.join(out_dir, f'{base} - {STEM_PT[stem]}{os.path.splitext(cand[0])[1]}')
         os.replace(os.path.join(out_dir, cand[0]), path)
         prev = os.path.join(out_dir, f'{stem.lower()}.preview.mp3')
-        _make_preview(path, prev)
+        _make_preview(path, prev, job)
         size = os.path.getsize(path)
         files.append({'stem': stem, 'label': STEM_PT[stem], 'icon': STEM_ICON[stem], 'color': STEM_COLOR[stem],
                       'file': os.path.basename(path), 'rel': f"{job['id']}/{os.path.basename(path)}",
@@ -635,7 +734,7 @@ def _run_separate_job(job):
         job['percent'] = (i + 1) / len(stems) * 100
     # prévia do original para comparação no mixer
     orig_prev = os.path.join(out_dir, 'original.preview.mp3')
-    if _make_preview(wav, orig_prev):
+    if _make_preview(wav, orig_prev, job):
         job['original_preview'] = f"{job['id']}/original.preview.mp3"
     job['files'] = files
     _stage(job, 'export', 'Concluído', 'done', 100)
@@ -660,6 +759,7 @@ def _run_job(job_id):
             _run_separate_job(job)
         else:
             _run_download_job(job)
+        _check_cancel(job)
         job['status'] = 'done'; job['percent'] = 100
     except yt_dlp.utils.DownloadCancelled:
         job['status'] = 'cancelled'; job['stage_label'] = 'Cancelado'
@@ -722,6 +822,8 @@ def cb_start_job(payload):
         elif kind == 'download':
             if src['kind'] != 'youtube':
                 return JSON({'ok': False, 'error': 'O download de áudio só vale para links do YouTube.'})
+            if str(payload.get('audio_quality', 'best')) not in ('best', '320', '256', '192', '128'):
+                return JSON({'ok': False, 'error': 'Qualidade de áudio inválida.'})
             fmt = payload.get('audio_format', 'mp3')
             if fmt not in ('mp3', 'm4a', 'opus', 'flac', 'wav', 'best'):
                 return JSON({'ok': False, 'error': 'Formato de áudio inválido.'})
@@ -767,7 +869,7 @@ def cb_jobs_list():
 
 def cb_cancel_job(job_id):
     job = STATE['jobs'].get(job_id)
-    if job:
+    if job and job.get('status') in ('queued', 'running'):
         job['cancel'] = True
         p = job.get('proc')
         if p:
@@ -778,7 +880,7 @@ def cb_cancel_job(job_id):
 def cb_zip_job(job_id):
     try:
         job = STATE['jobs'].get(job_id)
-        if not job or not job.get('files'): return JSON({'ok': False, 'error': 'Nenhum arquivo para compactar.'})
+        if not job or job.get('status') != 'done' or not job.get('files'): return JSON({'ok': False, 'error': 'Nenhum arquivo para compactar.'})
         src = os.path.join(OUT_DIR, job_id)
         name = _safe_name(job.get('title') or 'faixas', 60)
         tmp = os.path.join(OUT_DIR, f'{job_id}_zipsrc'); shutil.rmtree(tmp, ignore_errors=True); os.makedirs(tmp)
@@ -794,9 +896,7 @@ def cb_zip_job(job_id):
 def cb_colab_download(rel):
     """Download pelo mecanismo nativo do Colab (vai direto para a pasta Downloads do navegador)."""
     try:
-        path = os.path.normpath(os.path.join(OUT_DIR, rel))
-        if not path.startswith(os.path.normpath(OUT_DIR)) or not os.path.exists(path):
-            raise FileNotFoundError('Arquivo não encontrado (a sessão pode ter sido reiniciada).')
+        path = _output_path(rel)
         from google.colab import files as colab_files
         colab_files.download(path)
         return JSON({'ok': True})
@@ -806,9 +906,7 @@ def cb_colab_download(rel):
 def cb_preview_b64(rel):
     """Plano B do mixer: entrega a prévia em base64 pela ponte do Colab quando o proxy de portas não responde."""
     try:
-        path = os.path.normpath(os.path.join(OUT_DIR, rel))
-        if not path.startswith(os.path.normpath(OUT_DIR)) or not os.path.exists(path):
-            raise FileNotFoundError('Prévia não encontrada.')
+        path = _output_path(rel, preview=True)
         with open(path, 'rb') as f:
             data = base64.b64encode(f.read()).decode('ascii')
         return JSON({'ok': True, 'b64': data, 'mime': 'audio/mpeg'})
@@ -822,7 +920,7 @@ def cb_cleanup():
                 return JSON({'ok': False, 'error': 'Há tarefas em andamento. Aguarde ou cancele antes de limpar.'})
         shutil.rmtree(OUT_DIR, ignore_errors=True); os.makedirs(OUT_DIR, exist_ok=True)
         shutil.rmtree(WORK_DIR, ignore_errors=True); os.makedirs(WORK_DIR, exist_ok=True)
-        STATE['jobs'].clear(); STATE['sources'].clear()
+        STATE['jobs'].clear(); STATE['sources'].clear(); STATE['uploads'].clear()
         return JSON({'ok': True})
     except Exception as e:
         return JSON({'ok': False, 'error': str(e)})
@@ -833,13 +931,16 @@ def _prefetch_model(model):
         return
     STATE['prefetch'][model] = 'running'
     def run():
-        try:
-            subprocess.run(_sep_cmd() + ['--download_model_only', '--model_filename', model,
-                            '--model_file_dir', MODELS_DIR, '--log_level', 'warning'],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=1800)
-            STATE['prefetch'][model] = 'done' if _model_ready(model) else 'failed'
-        except Exception:
-            STATE['prefetch'][model] = 'failed'
+        with MODEL_LOCK:
+            try:
+                if not _model_ready(model):
+                    subprocess.run(_sep_cmd() + ['--download_model_only', '--model_filename', model,
+                                   '--model_file_dir', MODELS_DIR, '--log_level', 'warning'],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=1800, check=True)
+                    STATE.setdefault('ready_models', set()).add(model)
+                STATE['prefetch'][model] = 'done'
+            except Exception:
+                STATE['prefetch'][model] = 'failed'
     threading.Thread(target=run, daemon=True).start()
 
 def cb_models_status():
@@ -852,23 +953,38 @@ class _FileHandler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, *a): pass
     def list_directory(self, path):
         self.send_error(403, 'Listagem desabilitada'); return None
+    def do_HEAD(self):
+        try:
+            rel = urllib.parse.unquote(urllib.parse.urlsplit(self.path).path).lstrip('/')
+            _output_path(rel)
+        except (ValueError, OSError):
+            self.send_error(404); return
+        super().do_HEAD()
     def do_GET(self):
-        path = self.translate_path(self.path.split('?')[0])
-        if os.path.isdir(path) or not os.path.exists(path):
-            return super().do_GET()
+        try:
+            rel = urllib.parse.unquote(urllib.parse.urlsplit(self.path).path).lstrip('/')
+            path = _output_path(rel)
+        except (ValueError, OSError):
+            self.send_error(404); return
         size = os.path.getsize(path)
         rng = self.headers.get('Range')
         start, end = 0, size - 1
-        if rng and rng.startswith('bytes='):
-            a, _, b = rng[6:].partition('-')
+        if rng:
+            match = re.fullmatch(r'bytes=(\d*)-(\d*)', rng)
             try:
-                start = int(a) if a else max(0, size - int(b))
-                end = int(b) if (a and b) else end
+                if not match or not any(match.groups()) or size == 0: raise ValueError()
+                a, b = match.groups()
+                if a:
+                    start = int(a); end = min(int(b), size - 1) if b else size - 1
+                else:
+                    suffix = int(b)
+                    if suffix <= 0: raise ValueError()
+                    start = max(0, size - suffix)
+                if start >= size or end < start: raise ValueError()
             except ValueError:
-                start, end = 0, size - 1
-            if start >= size:
-                self.send_response(416); self.send_header('Content-Range', f'bytes */{size}'); self.end_headers(); return
-            end = min(end, size - 1)
+                self.send_response(416)
+                self.send_header('Content-Range', f'bytes */{size}')
+                self.send_header('Content-Length', '0'); self.end_headers(); return
         ctype = self.guess_type(path)
         self.send_response(206 if rng else 200)
         self.send_header('Content-Type', ctype)
@@ -893,8 +1009,8 @@ def _start_file_server():
         allow_reuse_address = True; daemon_threads = True
     try:
         srv = _Srv(('0.0.0.0', FILE_PORT), _FileHandler)
-    except OSError:
-        return
+    except OSError as e:
+        raise RuntimeError('A porta de prévias está ocupada. Reinicie a sessão e execute as células 1 e 2.') from e
     STATE['server'] = srv
     threading.Thread(target=srv.serve_forever, daemon=True).start()
 
