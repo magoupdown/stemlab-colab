@@ -68,3 +68,9 @@ Modelos usados via [audio-separator](https://github.com/nomadkaraoke/python-audi
 Após separar, use **M** para excluir qualquer faixa, **S** para ouvir e incluir somente as faixas em Solo, e os volumes para ajustar a combinação. Em **Renderizar mixagem**, escolha WAV, FLAC ou MP3 e gere um único acompanhamento. Por exemplo, voz e piano, banda sem baixo ou somente instrumentos sem voz. O Original é apenas uma referência de escuta e nunca é incluído.
 
 A renderização usa os arquivos das faixas, não as prévias MP3 do mixer. Os arquivos separados continuam disponíveis. A mixagem entra na fila, pode ser cancelada e tem opção de cópia no Drive. Depois de pronta, use **Voltar às faixas** para criar outra combinação. O formato escolhido não recupera qualidade perdida em fontes já comprimidas.
+
+## Tela inteira e smartphone
+
+Use **Tela inteira**, no topo, para expandir a interface; use **Restaurar** ou Esc para voltar. Quando o navegador ou a permissão do Colab não permitir tela inteira, o aplicativo amplia dentro da célula, com a mesma opção de restauração. A reprodução e as tarefas continuam na sessão atual.
+
+O layout adapta etapas, botões, mixer e controles de mixagem a telas estreitas, com alvos de toque maiores. No smartphone, abra pelo mesmo link do Colab e execute as células 1 e 2. A disponibilidade de tela inteira depende do navegador e das permissões da página.

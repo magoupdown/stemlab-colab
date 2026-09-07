@@ -290,6 +290,41 @@
           #stemlab .modal h3 { font-size:17px; margin-bottom:8px; } #stemlab .modal p { color:var(--muted); font-size:13.5px; margin:0 0 16px; }
           #stemlab .modal .actions { margin-top:0; justify-content:flex-end; }
           @media (max-width: 600px) { #stemlab .brand p { display:none; } #stemlab .status { width:100%; order:5; flex-wrap:nowrap; overflow-x:auto; scrollbar-width:none; padding-bottom:2px; } #stemlab .status::-webkit-scrollbar { display:none; } #stemlab .user { order:3; } #stemlab .icon-btn { order:4; } #stemlab .brand { order:1; } #stemlab main { padding:16px 14px 22px; } #stemlab .topbar, #stemlab .stepper { padding-left:14px; padding-right:14px; } #stemlab .hero h2 { font-size:24px; } #stemlab .input-row { flex-direction:column; } #stemlab .card { padding:16px; } #stemlab .user span { max-width:120px; } }
+
+          /* Tela inteira e controles adaptados ao toque */
+          #stemlab:fullscreen, #stemlab:-webkit-full-screen {
+            width:100%; max-width:none; height:100vh; height:100dvh;
+            min-height:0; margin:0; border-radius:0; overflow:auto;
+            padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+          }
+          #stemlab.expanded { max-width:none; border-radius:0; min-height:90vh; }
+          #stemlab:fullscreen .topbar, #stemlab.expanded .topbar { position:sticky; top:0; z-index:20; background:var(--panel-solid); }
+          #stemlab #screenBtn { min-height:44px; white-space:nowrap; }
+          #stemlab .stem > div, #stemlab .transport > div, #stemlab .preview > div { min-width:0; }
+          #stemlab .note, #stemlab .meta, #stemlab .qjob, #stemlab #mixSummary { overflow-wrap:anywhere; }
+          #stemlab select { max-width:100%; color:var(--text); background:var(--panel-2); border:1px solid var(--line-2); border-radius:8px; padding:8px; }
+          @media (max-width:600px) {
+            #stemlab { width:100%; min-width:0; border-radius:14px; }
+            #stemlab .brand { flex:1 1 130px; min-width:0; }
+            #stemlab #screenBtn { order:2; font-size:12px; padding:8px 10px; }
+            #stemlab .topbar { gap:8px; }
+            #stemlab .status { flex-wrap:wrap; overflow:visible; }
+            #stemlab .stepper { gap:4px; }
+            #stemlab .step { min-width:0; padding:8px 2px; gap:4px; flex-direction:column; font-size:10px; }
+            #stemlab .btn, #stemlab .icon-btn, #stemlab .mbtn { min-height:44px; }
+            #stemlab .icon-btn, #stemlab .mbtn { min-width:44px; }
+            #stemlab input:not([type=range]):not([type=checkbox]):not([type=radio]), #stemlab select, #stemlab textarea { font-size:16px; max-width:100%; }
+            #stemlab .actions, #stemlab .actions .right { flex-wrap:wrap; gap:8px; }
+            #stemlab .actions .right { width:100%; }
+            #stemlab .actions .btn { flex:1 1 auto; white-space:normal; }
+            #stemlab .transport { grid-template-columns:44px minmax(0,1fr); gap:10px; padding:12px; }
+            #stemlab #mxState { grid-column:1 / -1; justify-self:start; }
+            #stemlab .stem { gap:8px; padding:10px; }
+            #stemlab .stem .ctl { gap:8px; }
+            #stemlab .stem .fi { white-space:normal; overflow-wrap:anywhere; }
+            #stemlab .vol { min-width:70px; min-height:44px; }
+            #stemlab .seek { min-height:44px; }
+          }
         </style>
 
         <div id="stemlab" data-theme="dark">
@@ -307,6 +342,7 @@
               <div class="chip" id="chipDrive"><i class="dot"></i><span>Drive</span></div>
             </div>
             <div class="user"><div class="avatar" id="avatar">?</div><span id="userName">Conta Google</span></div>
+            <button class="btn" id="screenBtn" type="button" aria-pressed="false" title="Expandir ou restaurar a interface">⛶ Tela inteira</button>
             <button class="icon-btn" id="themeBtn" title="Alternar tema claro/escuro">☾</button>
           </header>
 
@@ -500,7 +536,7 @@
           }
           let _rzT = null;
           function resize(){
-            if(!IS_COLAB) return;
+            if(!IS_COLAB || isAppFullscreen()) return;
             clearTimeout(_rzT);
             _rzT = setTimeout(() => { try { const o = google.colab.output; if(o && typeof o.resizeIframeToContent === 'function') o.resizeIframeToContent(); } catch(e){} }, 60);
           }
@@ -558,6 +594,43 @@
           (function(){ const eq = $('#eq'); for(let i=0;i<28;i++){ const b=document.createElement('i'); b.style.animationDelay = (-(i*0.13)%1.4)+'s'; b.style.animationDuration = (1.1 + (i%5)*0.18)+'s'; eq.appendChild(b);} })();
 
           // tema
+
+          const screenBtn = $('#screenBtn');
+          function isAppFullscreen(){ return document.fullscreenElement === root || document.webkitFullscreenElement === root; }
+          function syncScreenButton(){
+            const expanded = isAppFullscreen() || root.classList.contains('expanded');
+            screenBtn.textContent = expanded ? '⤢ Restaurar' : '⛶ Tela inteira';
+            screenBtn.setAttribute('aria-pressed', String(expanded));
+            screenBtn.title = expanded ? 'Voltar ao tamanho normal' : 'Expandir a interface';
+            if(!isAppFullscreen()) resize();
+          }
+          screenBtn.addEventListener('click', async () => {
+            screenBtn.disabled = true;
+            try {
+              if(isAppFullscreen()){
+                if(document.exitFullscreen) await document.exitFullscreen();
+                else if(document.webkitExitFullscreen) document.webkitExitFullscreen();
+              } else if(root.classList.contains('expanded')){
+                root.classList.remove('expanded');
+              } else {
+                try {
+                  if(root.requestFullscreen && document.fullscreenEnabled) await root.requestFullscreen();
+                  else if(root.webkitRequestFullscreen && document.webkitFullscreenEnabled) root.webkitRequestFullscreen();
+                  else throw new Error('Fullscreen indisponível');
+                } catch(e) {
+                  root.classList.add('expanded');
+                  toast('Interface ampliada dentro do notebook. Este navegador ou o Colab não permitiu tela inteira. Use Restaurar para voltar.', 'info', 7000);
+                }
+              }
+            } catch(e) { toast('Não foi possível alterar a tela. Tente novamente ou pressione Esc.', 'warn'); }
+            finally { screenBtn.disabled = false; syncScreenButton(); }
+          });
+          document.addEventListener('fullscreenchange', syncScreenButton);
+          document.addEventListener('webkitfullscreenchange', syncScreenButton);
+          document.addEventListener('keydown', e => {
+            if(e.key === 'Escape' && root.classList.contains('expanded')){ root.classList.remove('expanded'); syncScreenButton(); }
+          });
+
           const themeBtn = $('#themeBtn');
           function setTheme(t){ root.dataset.theme = t; themeBtn.textContent = t==='dark' ? '☾' : '☀'; try{ localStorage.setItem('stemlab-theme', t);}catch(e){} }
           themeBtn.addEventListener('click', () => setTheme(root.dataset.theme==='dark' ? 'light' : 'dark'));
