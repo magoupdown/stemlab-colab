@@ -772,7 +772,7 @@
               card.innerHTML = `<div class="proc"><div class="ringbox"><div class="ring busy"><svg viewBox="0 0 200 200" style="animation-delay:${-(performance.now()%1600)}ms"><circle class="track" cx="100" cy="100" r="84"/><circle class="prog" cx="100" cy="100" r="84" stroke-dasharray="${RING_C}" stroke-dashoffset="${RING_C*0.8}"/></svg><div class="pct">…</div></div><div class="stage">Preparando</div></div><div><h2>Preparando…</h2><p class="sub">Aguarde, a tarefa está sendo iniciada.</p></div></div>`;
               $('#procActions').innerHTML = ''; resize(); return;
             }
-            const pct = Math.max(0, Math.min(100, j.percent || 0));
+            const pct = j.status === 'done' ? 100 : Math.max(0, Math.min(100, Number(j.percent) || 0));
             const indeterminate = j.status === 'running' && j.stage === 'model' && !(j.detail||'').includes('%');
             const stages = (j.stages||[]).map(s => {
               const cls = s.status === 'running' ? 'running' : (s.status === 'done' ? 'done' : (s.status === 'error' ? 'err' : ''));
@@ -781,10 +781,10 @@
               const tm = s.status === 'running' && s.started ? fmtEta(Date.now()/1000 - s.started) : '';
               return `<div class="tl ${cls}">${icon}<div><div class="lab">${esc(s.label)}</div><div class="det">${det}</div></div><div class="tm">${tm}</div></div>`;
             }).join('');
-            const title = j.status === 'queued' ? `Na fila${j.ahead ? ` · ${j.ahead} na frente` : ''}` : (j.kind === 'separate' ? 'Separando as faixas' : 'Baixando o áudio');
+            const title = j.status === 'done' ? 'Concluído' : j.status === 'queued' ? `Na fila${j.ahead ? ` · ${j.ahead} na frente` : ''}` : (j.kind === 'separate' ? 'Separando as faixas' : 'Baixando o áudio');
             const est = j.kind === 'separate' && j.status === 'running' ? `Tempo estimado total: ≈ ${fmtEta(estSecondsFor(j))}` : '';
             const stageShort = {fetch:'obtendo áudio', model:'modelo de IA', separate:'separando', export:'exportando'}[j.stage] || (j.status === 'queued' ? 'na fila' : '');
-            card.innerHTML = `<div class="proc"><div class="ringbox"><div class="ring ${j.status==='running' || j.status==='queued' ? 'busy' : ''}"><svg viewBox="0 0 200 200" style="animation-delay:${-(performance.now()%1600)}ms"><circle class="track" cx="100" cy="100" r="84"/><circle class="prog" cx="100" cy="100" r="84" stroke-dasharray="${RING_C}" stroke-dashoffset="${indeterminate ? RING_C*0.8 : RING_C*(1-pct/100)}"/></svg><div class="pct">${indeterminate ? '…' : Math.round(pct)+'%'}<small>${esc(stageShort)}</small></div></div><div class="stage">${esc(j.stage_label||'')}</div></div>
+            card.innerHTML = `<div class="proc"><div class="ringbox"><div class="ring ${indeterminate || j.status==='queued' ? 'busy' : ''}"><svg viewBox="0 0 200 200" style="animation-delay:${-(performance.now()%1600)}ms"><circle class="track" cx="100" cy="100" r="84"/><circle class="prog" cx="100" cy="100" r="84" stroke-dasharray="${RING_C}" stroke-dashoffset="${indeterminate ? RING_C*0.8 : RING_C*(1-pct/100)}"/></svg><div class="pct">${indeterminate ? '…' : Math.round(pct)+'%'}<small>${esc(stageShort)}</small></div></div><div class="stage">${esc(j.stage_label||'')}</div></div>
               <div><h2>${title}</h2><p class="sub" style="margin-bottom:12px"><b>${esc(j.title||'')}</b> · ${esc(j.label||'')}${j.elapsed ? ` · ${fmtEta(j.elapsed)} decorridos` : ''}</p>${est ? `<p class="small muted" style="margin:0 0 12px">${est}. Você pode preparar outra música enquanto espera: a fila continua rodando.</p>` : ''}<div class="timeline">${stages}</div>${j.warning ? `<div class="note warn">${esc(j.warning)}</div>` : ''}</div></div>`;
             $('#procActions').innerHTML = `<button class="btn ghost" id="anotherBtn">＋ Preparar outra música</button><div class="right"><button class="btn danger" id="cancelBtn">✕ Cancelar</button></div>`;
             $('#cancelBtn').addEventListener('click', async e => { if(!await confirmModal({title:'Cancelar esta tarefa?', text:'O processamento será interrompido e os arquivos parciais descartados.', ok:'Cancelar tarefa', cancel:'Continuar', danger:true})) return; busy(e.target, true, 'Cancelando'); await api('cancel_job', j.id); });
@@ -798,6 +798,11 @@
             let j; try { j = await api('job_status', S.jobId); } catch(e){ S.timer = setTimeout(poll, 2500); return; }
             if(!j.ok){ toast(j.error, 'err'); return; }
             if(j.status === 'queued' || j.status === 'running'){ if(S.step === 4) renderProc(j); S.timer = setTimeout(poll, 1200); return; }
+            if(j.status === 'done' && S.step === 4){
+              renderProc(j);
+              await new Promise(resolve => setTimeout(resolve, 600));
+              if(S.jobId !== j.id) return;
+            }
             if(S.step === 4 || S.step === 5){ renderResult(j); if(S.step !== 5) goto(5); }
           }
 
