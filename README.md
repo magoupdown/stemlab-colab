@@ -11,7 +11,7 @@ Notebook do Google Colab com **interface de página web** que usa inteligência 
 - 🎤 **Voz + Playback** (2 faixas) — modelo BS-Roformer, voltado à separação de voz. Ideal para karaokê, estudo de canto e playbacks.
 - 🥁 **Banda** (4 faixas) — voz, bateria, baixo e outros, com o Demucs afinado (htdemucs_ft).
 - 🎸 **Completo** (6 faixas) — voz, bateria, baixo, guitarra, piano e outros (htdemucs_6s).
-- ▶ **Fonte**: link do YouTube (vídeo, YouTube Music, Shorts) **ou** arquivo do computador (MP3, WAV, FLAC, M4A, OGG, OPUS, AIFF, MP4/WEBM, até 250 MB).
+- ▶ **Fonte**: link do YouTube (vídeo, YouTube Music, Shorts) **ou** arquivo do computador (MP3, WAV, FLAC, M4A, OGG, OPUS, AIFF, MP4/WEBM, até 1 GB (1024 MB)).
 - 🎛 **Mixer no navegador**: ouça o resultado, silencie (M) ou isole (S) cada faixa, ajuste o volume e compare com o original antes de baixar.
 - 💾 **Formatos de saída**: WAV, FLAC ou MP3 320 kbps. Botão "Baixar" por faixa, ZIP com tudo e cópia opcional para o Google Drive.
 - ⬇ **Só baixar o áudio** do YouTube, sem separar: MP3, M4A/AAC, OPUS, FLAC, WAV ou original, com escolha de qualidade e capa embutida.

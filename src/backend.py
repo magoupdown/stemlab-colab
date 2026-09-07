@@ -18,7 +18,7 @@ COOKIES_PATH  = os.path.join(BASE_DIR, 'cookies.txt')
 DRIVE_MYDRIVE = '/content/drive/MyDrive'
 DRIVE_ROOT    = os.path.join(DRIVE_MYDRIVE, 'StemLab')
 FILE_PORT     = 8766
-MAX_UPLOAD_MB = 250
+MAX_UPLOAD_MB = 1024
 MAX_DURATION  = 25 * 60   # 25 min: acima disso a GPU gratuita costuma estourar a memória
 MOCK          = bool(os.environ.get('STEMLAB_MOCK'))  # modo de teste local sem GPU/modelos
 for _d in (WORK_DIR, OUT_DIR, MODELS_DIR):
